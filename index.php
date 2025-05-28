@@ -1802,6 +1802,7 @@ if ( in_array( 'woocommerce/woocommerce.php', apply_filters( 'active_plugins', g
          		$posale = $wpdb->get_row("SELECT * FROM {$wpdb->prefix}bimsc_posales WHERE posale_id = {$posale_id}");
          	}
 
+			// check
 			$data = array(
 				'Sale' => array(
 					"company_id" => !empty($posale) ? $posale->company_id : get_option('bimsc_company_id'),
@@ -1809,7 +1810,7 @@ if ( in_array( 'woocommerce/woocommerce.php', apply_filters( 'active_plugins', g
 					"posale_id" => !empty($posale) ? $posale->posale_id: get_option('bimsc_posale_id'),
 					"billed" => true,
 					"currency_id" => get_option('bimsc_currency_id'),
-					"preorder" => true,
+					"preorder" => false, //true
 					'preorder_status' => 'confirmed',
 					'status' => 'pending',
 					"issue_date" => date("Y-m-d"),
@@ -1905,11 +1906,12 @@ if ( in_array( 'woocommerce/woocommerce.php', apply_filters( 'active_plugins', g
 
 			    $nota = $porcentaje_descuento > 0 ? "Incluye descuento del {$porcentaje_descuento}% por forma de pago seleccionada" : '';
 
+				// mod
 			    $data['SalesProduct'][] = array(
 			        'product_id' => $product->get_meta('_bims_id'),
 			        'quantity' => $cantidad,
 			        'price' => round($precio_unitario_bruto, 2),
-					'tax_id' => 1,
+					//'tax_id' => 1,
 			        'discount_amount' => round($descuento_unitario, 2),
 			        'notaxes' => false,
 			        'edited_prices' => true,
@@ -1923,11 +1925,12 @@ if ( in_array( 'woocommerce/woocommerce.php', apply_filters( 'active_plugins', g
 				return false;
 			// var_dump($order); die();
 			if($order->get_total_shipping()>0) {
+				// mod
 				$data['SalesProduct'][] = array(
 					'product_id' => get_option('bimsc_shipping_product_id'),
 					'quantity' => 1,
 					'price' => $order->get_total_shipping(),
-					'tax_id' => 1,
+					//'tax_id' => 1,
 				);
 			}
 

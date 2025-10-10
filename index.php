@@ -748,10 +748,17 @@ if ( in_array( 'woocommerce/woocommerce.php', apply_filters( 'active_plugins', g
 		}
 
 	    public function __construct() {
-			$this->url = get_option('bimsc_url');
-			$this->user = get_option('bimsc_user');
-			$this->password = get_option('bimsc_password');
-			$this->tenant = get_option('bimsc_tenant');
+
+			require_once(__DIR__ . '/wp-config-env.php');
+
+			$this->url = getenv('BIMSC_URL') ?: get_option('bimsc_url');
+			$this->user = getenv('BIMSC_USER') ?: get_option('bimsc_user');
+			$this->password = getenv('BIMSC_PASSWORD') ?: get_option('bimsc_password');
+			$this->tenant = getenv('BIMSC_TENANT') ?: get_option('bimsc_tenant');
+
+			if (empty($this->url) || empty($this->user) || empty($this->password)) {
+				error_log('BIMSC: Credenciales no configuradas. Verifica .env o configuración de WordPress.');
+			}
 
 	    	// date_default_timezone_set("America/Asuncion");
 			$send_no_cache_headers = apply_filters('rest_send_nocache_headers', is_user_logged_in());
@@ -1666,14 +1673,20 @@ if ( in_array( 'woocommerce/woocommerce.php', apply_filters( 'active_plugins', g
 		}
 
 		private function login() {
+			if (empty($this->user) || empty($this->password)) {
+				error_log('BIMSC Login Error: Credenciales vacías');
+				return false;
+			}
+
 			$data = array(
-				'user' => get_option('bimsc_user'),
-				'password' => md5(get_option('bimsc_password')),
+				'user' => $this->user,
+				'password' => md5($this->password),
 			);
 
-			if(!empty(get_option('bimsc_tenant'))) {
-				$data['tenant'] = get_option('bimsc_tenant');
+			if(!empty($this->tenant)) {
+				$data['tenant'] = $this->tenant;
 			}
+
 			$response = $this->request('users/login', $data);
 			if(!empty($response['content'])) {
 				$response['content'] = json_decode($response['content'], true);
@@ -1681,9 +1694,13 @@ if ( in_array( 'woocommerce/woocommerce.php', apply_filters( 'active_plugins', g
 					$this->sid = $response['content']['data']['Session']['id'];
 					return true;
 				} else {
+					error_log('BIMSC Login Error: ' . json_encode($response['content']));
 					return false;
 				}
 			}
+			
+			error_log('BIMSC Login Error: Respuesta vacía');
+			return false;
 		}
 
 		public function getProducts() {

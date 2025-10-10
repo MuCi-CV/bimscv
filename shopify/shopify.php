@@ -1,14 +1,21 @@
 <?php
 class BimsC_Shopify
 {
-    var $url = "https://albertina-py.myshopify.com";
-    var $base_url = "https://albertina-py.myshopify.com";
-    var $version = '2024-01';
-    var $token = "REDACTED936418801dc5112af5ca4c373d40bcd5";
+    var $url;
+    var $base_url;
+    var $version;
+    var $token;
 
 
     public function __construct() {
-
+        $this->url = getenv('SHOPIFY_URL') ?: "https://albertina-py.myshopify.com";
+        $this->base_url = getenv('SHOPIFY_URL') ?: "https://albertina-py.myshopify.com";
+        $this->version = getenv('SHOPIFY_API_VERSION') ?: '2024-01';
+        $this->token = getenv('SHOPIFY_TOKEN') ?: '';
+        
+        if (empty($this->token)) {
+            error_log('SHOPIFY_TOKEN no está configurado en .env');
+        }
     }
 
     public function listProductsByCollection($collection_id) {

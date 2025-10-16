@@ -1764,11 +1764,11 @@ if ( in_array( 'woocommerce/woocommerce.php', apply_filters( 'active_plugins', g
 		public function so_payment_complete( $order_id, $posale_id = null ){
 			global $wpdb;
 			$order = wc_get_order( $order_id );
+			
 			if(empty(get_option('bimsc_docid_field'))) {
 				$order->add_order_note("No Doc Id");
 				return false;
 			}
-			
 
 			$bims_id = $order->get_meta('bims_id');
 
@@ -1780,54 +1780,197 @@ if ( in_array( 'woocommerce/woocommerce.php', apply_filters( 'active_plugins', g
 				return false;
 			}
 			
-            if( sizeof( $order->get_refunds() ) > 0 ) {
+			if( sizeof( $order->get_refunds() ) > 0 ) {
 				$order->add_order_note("Refunds");
-                return false;
-            }
+				return false;
+			}
 
 			$items = $order->get_items();
-         	// $documentId = get_post_meta( $order_id, '_'.get_option('bimsc_docid_field'), true );
-         	$documentId = $order->get_meta('_'.get_option('bimsc_docid_field'));
+			$documentId = $order->get_meta('_'.get_option('bimsc_docid_field'));
+			$billingCompanyName = get_post_meta( $order_id, '_billing_company', true );
 
-
-         	$billingCompanyName = get_post_meta( $order_id, '_billing_company', true );
-
-         	// var_dump($billingCompanyName); die();
-
-         	/*$meta = get_post_meta($order_id);
-         	// var_dump($meta);
-         	if(!$meta) {
-         		$order->add_order_note("No meta");
-         	    return false;
-         	}*/
-
-         	$shipping_address_1 = $order->get_billing_address_1();
-         	$shipping_address_2 = $order->get_billing_address_2();
-         	$shipping_name_1 = $order->get_billing_first_name();
-         	$shipping_name_2 = $order->get_billing_last_name();
-         	$shipping_phone = $order->get_billing_phone();
+			$shipping_address_1 = $order->get_billing_address_1();
+			$shipping_address_2 = $order->get_billing_address_2();
+			$shipping_name_1 = $order->get_billing_first_name();
+			$shipping_name_2 = $order->get_billing_last_name();
+			$shipping_phone = $order->get_billing_phone();
 			$shipping_city = $order->get_billing_city();
-         	$contact_address = $shipping_address_1." ".$shipping_address_2." Ciudad: ".$shipping_city;
-         	$contactId = $this->getContactId($documentId);
+			$contact_address = $shipping_address_1." ".$shipping_address_2." Ciudad: ".$shipping_city;
+			$contactId = $this->getContactId($documentId);
 
-         	$payment_method = $order->get_payment_method();
-         	$pms = unserialize(get_option('bimsc_pms'));
+			// ============================================================
+			// DETECCIÓN DE PUNTO DE VENTA Y MÉTODOS DE PAGO
+			// ============================================================
+			
+			// Detectar punto de venta desde FooEvents POS
+			$user_id_meta = null;
+			foreach($order->get_meta_data() as $meta) {
+				if($meta->key === '_fooeventspos_user_id') {
+					$user_id_meta = $meta->value;
+					break;
+				}
+			}
 
-         	$bims_pm_id = $pms[$payment_method];
+			// Verificar descuentos del 100% (cortesías)
+			$total = floatval($order->get_total());
+			$discount = floatval($order->get_discount_total());
 
-         	if(!empty($posale_id)) {
-         		$posale = $wpdb->get_row("SELECT * FROM {$wpdb->prefix}bimsc_posales WHERE posale_id = {$posale_id}");
-         	}
+			if($total == 0 && $discount > 0) {
+				$order->add_order_note("No procesado: Descuento del 100%");
+				return false;
+			}
 
-			// check
+			if(empty($user_id_meta)) {
+				// ========== COMPRA WEB ==========
+				$posale_id = 6; // Caja WEB
+				$sales_payment_methods = [
+					[
+						'payment_method_id' => 28, // En línea
+						'amount' => $order->get_total(),
+						'vaucher' => $order->get_transaction_id()
+					]
+				];
+				
+				// Obtener campos personalizados de facturación WEB
+				$ruc = $order->get_meta('_billing_ruc');
+				$gov_id = $order->get_meta('_billing_documento');
+				$social_reason = $order->get_meta('_billing_razon_social');
+				
+			} else {
+				// ========== COMPRA DESDE POS ==========
+				$user_id_value = intval($user_id_meta);
+				
+				// Verificar si es administrador
+				if($user_id_value == 2) {
+					$order->add_order_note("No procesado: orden desde cuenta administrador");
+					return false;
+				}
+				
+				// Determinar punto de venta según usuario
+				if($user_id_value == 729) {
+					$posale_id = 4; // SAN COSMOS
+				} elseif($user_id_value == 3) {
+					$posale_id = 1; // TATAKUALAB
+				} else {
+					$posale_id = 7; // Otro punto de venta
+				}
+				
+				// Verificar si es cortesía
+				if($order->get_payment_method_title() === 'Cortesía') {
+					$order->add_order_note("No procesado: Cortesía");
+					return false;
+				}
+				
+				// Extraer métodos de pago de FooEvents POS
+				$payments_meta = null;
+				foreach($order->get_meta_data() as $meta) {
+					if($meta->key === '_fooeventspos_payments') {
+						$payments_meta = $meta->value;
+						break;
+					}
+				}
+				
+				if(!empty($payments_meta)) {
+					$payments = json_decode($payments_meta, true);
+					
+					// Mapeo de métodos de pago FooEvents POS -> BIMS
+					$method_mapping = [
+						'fooeventspos_check_payment' => 34,  // Gift Card
+						'fooeventspos_cash' => 21,           // Efectivo
+						'fooeventspos_cash_on_delivery' => 26, // Transferencia
+						'fooeventspos_other' => 27,          // Bancard
+						'fooeventspos_online' => 28          // En línea
+					];
+					
+					$sales_payment_methods = [];
+					
+					if(count($payments) === 1 && !isset($payments[0]['amount'])) {
+						// Un solo método de pago, pagó el total
+						$method_id = $method_mapping[$payments[0]['opmk']] ?? 28;
+						$sales_payment_methods[] = [
+							'payment_method_id' => $method_id,
+							'amount' => $order->get_total(),
+							'vaucher' => $order->get_transaction_id()
+						];
+					} else {
+						// Múltiples métodos de pago
+						foreach($payments as $payment) {
+							$method_id = $method_mapping[$payment['opmk']] ?? 28;
+							$sales_payment_methods[] = [
+								'payment_method_id' => $method_id,
+								'amount' => floatval($payment['amount']),
+								'vaucher' => $payment['reference'] ?? ''
+							];
+						}
+					}
+				} else {
+					// Fallback: usar método de pago estándar de WooCommerce
+					$payment_method = $order->get_payment_method();
+					$pms = unserialize(get_option('bimsc_pms'));
+					$bims_pm_id = $pms[$payment_method] ?? 28;
+					
+					$sales_payment_methods = [
+						[
+							'payment_method_id' => $bims_pm_id,
+							'amount' => $order->get_total(),
+							'vaucher' => $order->get_transaction_id()
+						]
+					];
+				}
+				
+				// Obtener campos de facturación desde POS (shipping)
+				$ruc = $order->get_shipping_company();
+				$social_reason = $order->get_shipping_last_name();
+				$gov_id = null;
+			}
+
+			// Determinar tipo de documento y nombre
+			$document_type = 'ci';
+			$document_id = '';
+
+			if(!empty($ruc) && $ruc !== '') {
+				$document_type = 'ruc';
+				$document_id = $ruc;
+			} elseif(!empty($gov_id) && $gov_id !== '') {
+				$document_type = 'ci';
+				$document_id = $gov_id;
+			} else {
+				// Fallback: usar el documento original si existe
+				if(!empty($documentId)) {
+					$document_id = $documentId;
+					$document_type = strpos($documentId, "-") !== false ? 'ruc' : 'ci';
+				}
+			}
+
+			// Nombre del contacto
+			if(!empty($social_reason) && $social_reason !== '') {
+				$contact_name = $social_reason;
+			} elseif(!empty($billingCompanyName)) {
+				$contact_name = $billingCompanyName;
+			} else {
+				$contact_name = $order->get_billing_first_name() . ' ' . $order->get_billing_last_name();
+			}
+
+			// Obtener información del punto de venta
+			if(!empty($posale_id)) {
+				$posale = $wpdb->get_row("SELECT * FROM {$wpdb->prefix}bimsc_posales WHERE posale_id = {$posale_id}");
+			}
+
+			// Obtener el primer método de pago para compatibilidad con código existente
+			$bims_pm_id = $sales_payment_methods[0]['payment_method_id'];
+
+			// ============================================================
+			// CONSTRUIR DATOS DE LA VENTA
+			// ============================================================
+
 			$data = array(
 				'Sale' => array(
 					"company_id" => !empty($posale) ? $posale->company_id : get_option('bimsc_company_id'),
 					"agency_id" => !empty($posale) ? $posale->agency_id: get_option('bimsc_agency_id'),
-					"posale_id" => !empty($posale) ? $posale->posale_id: get_option('bimsc_posale_id'),
+					"posale_id" => $posale_id,
 					"billed" => true,
 					"currency_id" => get_option('bimsc_currency_id'),
-					"preorder" => false, //true
+					"preorder" => false,
 					'preorder_status' => 'confirmed',
 					'status' => 'pending',
 					"issue_date" => date("Y-m-d"),
@@ -1841,20 +1984,15 @@ if ( in_array( 'woocommerce/woocommerce.php', apply_filters( 'active_plugins', g
 					"channel" => "ecommerce",
 					'edited_prices' => true
 				),
-				'SalesPaymentMethod' => [
-					[
-						'payment_method_id' => $bims_pm_id,
-						'amount' => $order->get_total(),
-						'vaucher' => $order->get_transaction_id()
-					]
-				]
+				'SalesPaymentMethod' => $sales_payment_methods  // ✅ USAR VARIABLE CORRECTA
 			);
 
+			// Crear o usar contacto existente
 			if(!empty($contactId)) {
 				$data['Sale']['contact_id'] = $contactId;
 			} else {
 				$data['Contact'] = array(
-					'name' => !empty($billingCompanyName) ? $billingCompanyName : $order->get_billing_first_name()." ".$order->get_billing_last_name(),
+					'name' => $contact_name,  // ✅ USAR VARIABLE NUEVA
 					'address' => $order->get_billing_address_1()." ".$order->get_billing_address_2(),
 					'city' => $order->get_billing_city(),
 					'neighborhood' => $order->get_billing_state(),
@@ -1862,9 +2000,8 @@ if ( in_array( 'woocommerce/woocommerce.php', apply_filters( 'active_plugins', g
 					'country' => $order->get_billing_country(),
 					'emails' => $order->get_billing_email(),
 					'phones' => $order->get_billing_phone(),
-					'document_id' => $documentId,
-					// 'document_type' => 'nit'
-					'document_type' => strpos($documentId,"-") !== false ? 'ruc' : 'ci',
+					'document_id' => $document_id,  // ✅ USAR VARIABLE NUEVA
+					'document_type' => $document_type,  // ✅ USAR VARIABLE NUEVA
 				);
 				$contactId = $this->createContact($data['Contact']);
 				$order->add_order_note(json_encode($data['Contact']));
@@ -1874,106 +2011,131 @@ if ( in_array( 'woocommerce/woocommerce.php', apply_filters( 'active_plugins', g
 				}
 			}
 
+			// ============================================================
+			// PROCESAR PRODUCTOS (UNA SOLA VEZ)
+			// ============================================================
 
+			// Detectar si hay descuentos globales
+			$total_bruto = $order->get_subtotal();
+			$descuento_global = 0;
+			$porcentaje_descuento = 0;
 
-			/*foreach($items as $item) {
+			foreach ($order->get_fees() as $fee) {
+				if (stripos($fee->get_name(), 'Descuento por forma de pago') !== false) {
+					$descuento_global += abs($fee->get_total());
+					if (preg_match('/\(([\d.]+)%\)/', $fee->get_name(), $matches)) {
+						$porcentaje_descuento = floatval($matches[1]);
+					}
+				}
+			}
+
+			// Procesar cada producto
+			foreach($items as $item) {
 				$product = $item->get_product();
 				if(empty($product->get_meta('_bims_id')))
 					continue;
 				
-				$data['SalesProduct'][] = array(
-					'product_id' => $product->get_meta('_bims_id'),
-					'quantity' => $item->get_quantity(),
-					'price' => $item->get_total() / $item->get_quantity(),
-					'notaxes' => false,
-					'edited_prices' => true
-				);
-
-			}*/
-
-			$items = $order->get_items();
-
-			// check
-			$total_bruto = $order->get_subtotal(); // suma de precios sin impuestos ni descuento
-			$descuento_global = 0;
-			$porcentaje_descuento = 0;
-
-			// Detectar fee de descuento
-			foreach ($order->get_fees() as $fee) {
-			    if (stripos($fee->get_name(), 'Descuento por forma de pago') !== false) {
-			        $descuento_global += abs($fee->get_total());
-
-			        // Extraer el porcentaje (opcional, para la nota)
-			        if (preg_match('/\(([\d.]+)%\)/', $fee->get_name(), $matches)) {
-			            $porcentaje_descuento = floatval($matches[1]);
-			        }
-			    }
+				$cantidad = $item->get_quantity();
+				$product_id = $product->get_id();
+				$total_item = floatval($item->get_total());
+				$total_tax = floatval($item->get_total_tax());
+				
+				// IDs de productos especiales
+				$productos_especiales = [19657, 14372, 8421, 3681, 24482, 10648, 14369];
+				
+				if(in_array($product_id, $productos_especiales)) {
+					// Productos especiales: cantidad 1, precio = total
+					$data['SalesProduct'][] = [
+						'product_id' => $product->get_meta('_bims_id'),
+						'quantity' => 1.00,
+						'price' => $total_item,
+						'notaxes' => false,
+						'edited_prices' => true
+					];
+				} else {
+					// Productos normales
+					if($descuento_global > 0) {
+						// CON descuento
+						$precio_unitario_bruto = $item->get_subtotal() / $cantidad;
+						$proporcion = $item->get_subtotal() / $total_bruto;
+						$descuento_item_total = $proporcion * $descuento_global;
+						$descuento_unitario = $descuento_item_total / $cantidad;
+						
+						$nota = $porcentaje_descuento > 0 ? "Incluye descuento del {$porcentaje_descuento}% por forma de pago seleccionada" : '';
+						
+						$data['SalesProduct'][] = [
+							'product_id' => $product->get_meta('_bims_id'),
+							'quantity' => $cantidad,
+							'price' => round($precio_unitario_bruto, 2),
+							'discount_amount' => round($descuento_unitario, 2),
+							'notaxes' => false,
+							'edited_prices' => true,
+							'notes' => $nota
+						];
+					} else {
+						// SIN descuento
+						$precio_unitario = ($total_item + $total_tax) / $cantidad;
+						
+						$data['SalesProduct'][] = [
+							'product_id' => $product->get_meta('_bims_id'),
+							'quantity' => $cantidad,
+							'price' => round($precio_unitario, 2),
+							'notaxes' => false,
+							'edited_prices' => true
+						];
+					}
+				}
 			}
 
-			foreach($items as $item) {
-			    $product = $item->get_product();
-			    if (empty($product->get_meta('_bims_id')))
-			        continue;
-
-			    $cantidad = $item->get_quantity();
-			    $precio_unitario_bruto = $item->get_subtotal() / $cantidad; // precio original sin descuento
-			    $proporcion = $item->get_subtotal() / $total_bruto;
-			    $descuento_item_total = $proporcion * $descuento_global;
-			    $descuento_unitario = $descuento_item_total / $cantidad;
-
-			    $nota = $porcentaje_descuento > 0 ? "Incluye descuento del {$porcentaje_descuento}% por forma de pago seleccionada" : '';
-
-				// mod
-			    $data['SalesProduct'][] = array(
-			        'product_id' => $product->get_meta('_bims_id'),
-			        'quantity' => $cantidad,
-			        'price' => round($precio_unitario_bruto, 2),
-					//'tax_id' => 1,
-			        'discount_amount' => round($descuento_unitario, 2),
-			        'notaxes' => false,
-			        'edited_prices' => true,
-			        'notes' => $nota
-			    );
+			// Agregar Tips si existen
+			foreach($order->get_fees() as $fee) {
+				if($fee->get_name() === 'Tip') {
+					$data['SalesProduct'][] = [
+						'product_id' => 100, // ID del producto "Propina" en BIMS
+						'quantity' => 1.00,
+						'price' => floatval($fee->get_total()),
+						'notaxes' => false
+					];
+				}
 			}
 
-			// $this->debug($data); die();
-
-			if(empty($data['SalesProduct']))
-				return false;
-			// var_dump($order); die();
-			if($order->get_total_shipping()>0) {
-				// mod
-				$data['SalesProduct'][] = array(
+			// Agregar envío si existe
+			if($order->get_total_shipping() > 0) {
+				$data['SalesProduct'][] = [
 					'product_id' => get_option('bimsc_shipping_product_id'),
 					'quantity' => 1,
 					'price' => $order->get_total_shipping(),
-					//'tax_id' => 1,
-				);
+				];
 			}
 
-			
-			$result = $this->send_order($data);
+			// Verificar que haya productos
+			if(empty($data['SalesProduct'])) {
+				$order->add_order_note("No hay productos con _bims_id para procesar");
+				return false;
+			}
 
+			// ============================================================
+			// ENVIAR A BIMS
+			// ============================================================
+
+			$result = $this->send_order($data);
 			$result = json_decode($result, true);
+			
 			if(!empty($result['data']['Sale']['id'])) {
-			    // update_post_meta( $order_id, 'bims_id', $result['data']['Sale']['id'] );
-			    $order->update_meta_data('bims_id', $result['data']['Sale']['id']);
-			    $order->update_meta_data('bims_payment_method_id', $bims_pm_id);
-			    $order->update_meta_data('bims_json', json_encode($data));
-			    $order->update_meta_data('bims_result', json_encode($result));
-			    $order->save();
-			    // update_post_meta( $order_id, 'bims_json', json_encode($data) );
-			    // update_post_meta( $order_id, 'bims_result', json_encode($result) );
-			    $order->add_order_note("{$this->url}/sales/view/{$result['data']['Sale']['id']}");
-			    return $result['data']['Sale']['id'];
-			} else {
+				$order->update_meta_data('bims_id', $result['data']['Sale']['id']);
+				$order->update_meta_data('bims_payment_method_id', $bims_pm_id);
 				$order->update_meta_data('bims_json', json_encode($data));
 				$order->update_meta_data('bims_result', json_encode($result));
 				$order->save();
-			    // update_post_meta( $order_id, 'bims_json', json_encode($data) );
-			    // update_post_meta( $order_id, 'bims_result', json_encode($result) );
-			    $order->add_order_note("Hubo un error al enviar el pedido, verifique el meta bims_result");
-			    return false;
+				$order->add_order_note("{$this->url}/sales/view/{$result['data']['Sale']['id']}");
+				return $result['data']['Sale']['id'];
+			} else {
+				$order->update_meta_data('bims_json', json_encode($data));
+				$order->update_meta_data('bims_result', json_encode($result));
+				$order->update_meta_data('bimsc_failed', '1'); 
+				$order->save();
+				$order->add_order_note("Error al enviar a BIMS - revisar meta bims_result");
+				return false;
 			}
 		}
 

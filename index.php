@@ -5,8 +5,8 @@ use WP_CLI\Utils;
 /* 
 Plugin Name: Bims Sync
 Description: Plugin para la conexión con el Sistema BIMS
-Version: 1.5
-Author: Enrique Benitez
+Version: 1.5.2
+Author: Enrique Benitez (mod)
 */
 if ( ! class_exists( 'WC_Countries' ) ) {
     include_once(WP_PLUGIN_DIR.'/woocommerce/includes/class-wc-countries.php');
@@ -63,9 +63,26 @@ if ( in_array( 'woocommerce/woocommerce.php', apply_filters( 'active_plugins', g
 
 	function bimsc_menu_config(){
 		global $wp_roles;
+
+		if (!did_action('woocommerce_init')) {
+        	do_action('woocommerce_init');
+		}
+		
+		if (!WC()->cart) {
+			WC()->initialize_cart();
+		}
+
 		WC()->session = new WC_Session_Handler;
 		WC()->customer = new WC_Customer;
-		$checkout_fields = WC()->checkout->get_checkout_fields();
+		
+		
+		try {
+			$checkout_fields = WC()->checkout->get_checkout_fields();
+		} catch (Exception $e) {
+			$checkout_fields = [];
+			error_log('BIMS: Error obteniendo checkout fields - ' . $e->getMessage());
+		}
+
 		$all_roles = $wp_roles->roles;
 		$roles = [];
 		foreach($all_roles as $key => $role) {
